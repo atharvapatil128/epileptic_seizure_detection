@@ -5,3 +5,8 @@ plotly.express
 firebase_admin
 uuid
 requests
+twilio.rest
+uuid 
+phonenumbers
+os
+xgboost
