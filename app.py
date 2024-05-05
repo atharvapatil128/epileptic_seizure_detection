@@ -4,6 +4,12 @@ from uuid import uuid4
 import requests
 import pandas as pd
 import plotly.express as px
+from twilio.rest import Client
+import os
+import phonenumbers
+import pickle
+import re
+import xgboost
 
 # First thing in your script, set the page config.
 if 'page_config_set' not in st.session_state:
@@ -146,16 +152,51 @@ def auth_interface():
 
 # Define your model load and prediction functions here
 def load_model():
-    pass
-
-
-def predict(model, data):
-    return "No Seizure", 0.5  # placeholder
+    with open('./model/model.pkl', 'rb') as file:
+        model = pickle.load(file)
+    return model
 
 
 model = load_model()
 
+
+def prepare_data(data_file):
+    df = pd.read_csv(data_file)
+    return df
+
+
+def predict(model, data):
+    # Assuming model.predict_proba() returns probabilities for class 1
+    probabilities = model.predict_proba(data)[:, 1]
+    # Check if any probability exceeds the threshold
+    seizure_detected = any(prob > 0.5 for prob in probabilities)
+    return seizure_detected, max(probabilities)
+
+
 # Define your main app logic
+
+
+def validate_phone_number(number):
+    try:
+        parsed_number = phonenumbers.parse(number)
+        return phonenumbers.is_valid_number(parsed_number)
+    except phonenumbers.NumberParseException:
+        return False
+
+
+def send_sms_alert(message, phone_numbers):
+    account_sid = 'AC2a7fd32ada3c18ec93600f7fc79eee94'
+    auth_token = 'e8601ec9938e810853d7a938ffe1aabc'
+    client = Client(account_sid, auth_token)
+
+    valid_numbers = [
+        num for num in phone_numbers if validate_phone_number(num)]
+    for number in valid_numbers:
+        client.messages.create(
+            body=message,
+            from_='+12563848578',
+            to=number
+        )
 
 
 def display_patient_dashboard():
@@ -168,6 +209,8 @@ def display_patient_dashboard():
         patient_age = st.number_input('Age', step=1)
         patient_gender = st.selectbox(
             'Gender', ['Male', 'Female', 'Other'])
+        patient_number = st.text_input('Phone Number (e.g., +911234567890)')
+        patient_address = st.text_input('Address')
 
         # Save button
         if st.button('Save Patient Info'):
@@ -181,10 +224,13 @@ def display_patient_dashboard():
             time.sleep(3)  # Pause for 3 seconds with the success message
             st.session_state.info_saved = False  # Reset the flag
 
-        st.header('Settings ⚙️')
+        st.header('SMS Alert Settings ⚙️')
         notification_threshold = st.slider(
-            'Notification Threshold', 0.0, 1.0, 0.5)
-        alert_method = st.selectbox('Alert Method', ['SMS', 'Email'])
+            'Notification Threshold', 0.0, 1.0, 0.5, key='notif_threshold')
+        healthcare_provider_number = st.text_input(
+            "Primary Healthcare Provider Number (e.g., +911234567890)")
+        local_hospital_number = st.text_input(
+            "Local Emergency Number (e.g., +912345678910)")
 
     if st.sidebar.button('Logout', key='logout_button'):
         # Reset the session state on logout
@@ -193,7 +239,8 @@ def display_patient_dashboard():
         st.rerun()
 
         # Check if patient information is filled
-    patient_info_complete = all([patient_id, patient_age, patient_gender])
+    patient_info_complete = all(
+        [patient_id, patient_age, patient_gender, patient_address, patient_number])
 
     # Main Content Area - Using Containers in Columns
     col1, col2 = st.columns(2)  # Split into two columns
@@ -217,12 +264,29 @@ def display_patient_dashboard():
             if data_file is not None and patient_info_complete:
                 run_detection = st.button('Run Detection')
                 if run_detection:
-                    result, confidence = predict(model, df)
-                    st.metric(label="Classification Result", value=result)
-                    st.metric(label="Confidence Score",
-                              value=f"{confidence:.2f}")
-                    if result == 'Seizure Detected' and confidence > notification_threshold:
-                        st.success('🚨 Alert Sent via ' + alert_method)
+                    # Get the results and probabilities from the model
+                    seizure_detected, max_probability = predict(model, df)
+                    # Display results based on the model's prediction
+                    if seizure_detected:
+                        st.error("Seizure Alert! Immediate attention required.")
+                        st.write(
+                            f"Maximum seizure probability detected: {max_probability:.2f}")
+                        if max_probability >= st.session_state['notif_threshold']:
+                            message = f"Urgent: Seizure detected for {patient_id} (Age: {patient_age}, Gender: {patient_gender}, Phone: {patient_number}, Address: {patient_address}). Immediate attention required."
+                            # Check if phone numbers are valid before sending SMS
+                            if validate_phone_number(healthcare_provider_number) and validate_phone_number(local_hospital_number):
+                                send_sms_alert(
+                                    message, [healthcare_provider_number, local_hospital_number])
+                                st.success('🚨 Alert Sent via SMS')
+                            else:
+                                st.error(
+                                    "Invalid phone number(s). Please check the format.")
+                    else:
+                        st.success("No seizure detected.")
+                        st.write(
+                            f"Maximum seizure probability detected: {max_probability:.2f}")
+                else:
+                    st.info('No alert sent. Confidence below threshold.')
             else:
                 st.warning(
                     "Please complete patient information to enable detection.")
@@ -233,7 +297,14 @@ def display_patient_dashboard():
 
     st.header('Notifications and Alerts 🛎️')
     if st.button('Send Test Alert'):
-        st.success('📤 Test Alert Sent via ' + alert_method)
+        message = "Test alert from Epileptic Seizure Detection System."
+        if validate_phone_number(healthcare_provider_number) and validate_phone_number(local_hospital_number):
+            send_sms_alert(
+                message, [healthcare_provider_number, local_hospital_number])
+            st.success('📤 Test Alert Sent via SMS')
+        else:
+            st.error("Invalid phone number(s). Please check the format.")
+        st.success('📤 Test Alert Sent via SMS')
 
 
 def display_doctor_dashboard():
@@ -290,10 +361,16 @@ def display_doctor_dashboard():
             if data_file is not None and patient_info_complete:
                 run_detection = st.button('Run Detection')
                 if run_detection:
-                    result, confidence = predict(model, df)
-                    st.metric(label="Classification Result", value=result)
-                    st.metric(label="Confidence Score",
-                              value=f"{confidence:.2f}")
+                    # Get the results and probabilities from the model
+                    seizure_detected, max_probability = predict(model, df)
+                    if seizure_detected:
+                        st.error("Seizure Alert! Immediate attention required.")
+                        st.write(
+                            f"Maximum seizure probability detected: {max_probability:.2f}")
+                    else:
+                        st.success("No seizure detected.")
+                        st.write(
+                            f"Maximum seizure probability detected: {max_probability:.2f}")
             else:
                 st.warning(
                     "Please complete patient information to enable detection.")
