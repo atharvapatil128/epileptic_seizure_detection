@@ -5,10 +5,8 @@ import requests
 import pandas as pd
 import plotly.express as px
 from twilio.rest import Client
-import os
 import phonenumbers
 import pickle
-import re
 import xgboost
 
 # First thing in your script, set the page config.
