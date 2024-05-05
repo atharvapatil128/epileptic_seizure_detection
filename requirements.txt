@@ -5,7 +5,7 @@ plotly.express
 firebase_admin
 uuid
 requests
-twilio.rest
+twilio
 uuid 
 phonenumbers
 os
